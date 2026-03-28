@@ -157,10 +157,10 @@ export const updateUserResume = async (req, res) => {
             });
         }
 
-        const uploadResult = await cloudinary.uploader.upload(
-            resumeFile.path,
-            { resource_type: "auto" }
-        );
+        const uploadResult = await cloudinary.uploader.upload(resumeFile.path, {
+            resource_type: "raw",
+            use_filename: true,
+        });
 
         user.resume = uploadResult.secure_url;
 

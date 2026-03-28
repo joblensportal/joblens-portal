@@ -1,5 +1,5 @@
 import express from 'express'
-import { ChangeJobApplicationsStatus, changeVisiblity, getCompanyData, getCompanyJobApplicants, getCompanyPostedJobs, loginCompany, postJob, registerCompany } from '../controllers/companyController.js'
+import { ChangeJobApplicationsStatus, changeVisiblity, getCompanyData, getCompanyJobApplicants, getCompanyPostedJobs, loginCompany, postJob, registerCompany, streamApplicantResume } from '../controllers/companyController.js'
 import upload from '../config/multer.js'
 import { protectCompany } from '../middleware/authMiddleware.js'
 
@@ -19,6 +19,9 @@ router.post('/post-job', protectCompany, postJob)
 
 // Get Applicants Data of Company
 router.get('/applicants', protectCompany, getCompanyJobApplicants)
+
+// Open applicant resume (proxied PDF — avoids browser PDF viewer issues with direct Cloudinary URLs)
+router.get('/resume/:applicationId', protectCompany, streamApplicantResume)
 
 // Get  Company Job List
 router.get('/list-jobs', protectCompany, getCompanyPostedJobs)

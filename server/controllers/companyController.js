@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import Company from "../models/Company.js";
 import bcrypt from 'bcrypt'
 import cloudinary from "../config/cloudinary.js";
@@ -258,6 +259,50 @@ export const changeVisiblity = async (req, res) => {
         res.json({ success: false, message: error.message })
     }
 }
+
+/**
+ * Stream applicant resume PDF through the API so recruiters' browsers don't hit
+ * Cloudinary directly (fixes Chrome "Failed to load PDF document" / CORS / disposition issues).
+ */
+export const streamApplicantResume = async (req, res) => {
+  try {
+    const { applicationId } = req.params;
+    if (!applicationId || !mongoose.Types.ObjectId.isValid(applicationId)) {
+      return res.status(400).json({ success: false, message: "Invalid application id" });
+    }
+
+    const application = await JobApplication.findById(applicationId).populate("userId", "resume");
+    if (!application) {
+      return res.status(404).json({ success: false, message: "Application not found" });
+    }
+    if (application.companyId.toString() !== req.company._id.toString()) {
+      return res.status(403).json({ success: false, message: "Forbidden" });
+    }
+
+    const resumeUrl = application.userId?.resume;
+    if (!resumeUrl || typeof resumeUrl !== "string") {
+      return res.status(404).json({ success: false, message: "No resume on file" });
+    }
+
+    const upstream = await fetch(resumeUrl);
+    if (!upstream.ok) {
+      console.error("[Resume proxy] Upstream failed", upstream.status, resumeUrl);
+      return res.status(502).json({ success: false, message: "Could not load resume file" });
+    }
+
+    const buffer = Buffer.from(await upstream.arrayBuffer());
+    const upstreamType = upstream.headers.get("content-type") || "";
+    const mime = upstreamType.includes("pdf") ? "application/pdf" : upstreamType || "application/octet-stream";
+
+    res.setHeader("Content-Type", mime);
+    res.setHeader("Content-Disposition", 'inline; filename="resume.pdf"');
+    res.setHeader("Cache-Control", "private, max-age=300");
+    res.send(buffer);
+  } catch (error) {
+    console.error("[Resume proxy]", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
 
 export const createCompany = async (req, res) => {
   try {

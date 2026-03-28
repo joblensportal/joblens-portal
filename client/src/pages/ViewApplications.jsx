@@ -10,6 +10,40 @@ const ViewApplications = () => {
   const { backendUrl, companyToken } = useContext(AppContext)
 
   const [applicants, setApplicants] = useState(false)
+  const [openingResumeId, setOpeningResumeId] = useState(null)
+
+  const openResume = async (applicationId) => {
+    try {
+      setOpeningResumeId(applicationId)
+      const { data } = await axios.get(
+        `${backendUrl}/api/company/resume/${applicationId}`,
+        { headers: { token: companyToken }, responseType: 'blob' }
+      )
+      const blob = new Blob([data], { type: 'application/pdf' })
+      const url = URL.createObjectURL(blob)
+      const w = window.open(url, '_blank', 'noopener,noreferrer')
+      if (!w) {
+        toast.error('Allow pop-ups to view the resume')
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 120000)
+    } catch (error) {
+      let msg = 'Failed to open resume'
+      if (error.response?.data instanceof Blob) {
+        try {
+          const text = await error.response.data.text()
+          const parsed = JSON.parse(text)
+          if (parsed.message) msg = parsed.message
+        } catch {
+          /* ignore */
+        }
+      } else if (error.response?.data?.message) {
+        msg = error.response.data.message
+      }
+      toast.error(msg)
+    } finally {
+      setOpeningResumeId(null)
+    }
+  }
 
   // Function to fetch company Job Applications data 
   const fetchCompanyJobApplications = useCallback(async () => {
@@ -94,11 +128,15 @@ const ViewApplications = () => {
                 <td className='py-2 px-4 border-b max-sm:hidden'>{applicant.jobId.title}</td>
                 <td className='py-2 px-4 border-b max-sm:hidden'>{applicant.jobId.location}</td>
                 <td className='py-2 px-4 border-b'>
-                  <a href={applicant.userId.resume} target='_blank'
-                    className='bg-blue-50 text-blue-400 px-3 py-1 rounded inline-flex gap-2 items-center'
+                  <button
+                    type='button'
+                    disabled={!applicant.userId.resume || openingResumeId === applicant._id}
+                    onClick={() => openResume(applicant._id)}
+                    className='bg-blue-50 text-blue-400 px-3 py-1 rounded inline-flex gap-2 items-center disabled:opacity-50 disabled:cursor-not-allowed'
                   >
-                    Resume <img src={assets.resume_download_icon} alt="" />
-                  </a>
+                    {openingResumeId === applicant._id ? 'Opening…' : 'Resume'}{' '}
+                    <img src={assets.resume_download_icon} alt="" />
+                  </button>
                 </td>
                 <td className='py-2 px-4 border-b relative'>
                   {applicant.status === "Pending"
