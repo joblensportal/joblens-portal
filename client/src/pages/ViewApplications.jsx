@@ -12,7 +12,7 @@ const ViewApplications = () => {
   const [applicants, setApplicants] = useState(false)
   const [openingResumeId, setOpeningResumeId] = useState(null)
 
-  const openResume = async (applicationId) => {
+  const openResume = async (applicationId, directResumeUrl) => {
     try {
       setOpeningResumeId(applicationId)
       const { data } = await axios.get(
@@ -39,7 +39,12 @@ const ViewApplications = () => {
       } else if (error.response?.data?.message) {
         msg = error.response.data.message
       }
-      toast.error(msg)
+      toast.warning(`${msg} Trying direct link…`)
+      if (directResumeUrl && /^https?:\/\//i.test(directResumeUrl)) {
+        window.open(directResumeUrl.trim(), '_blank', 'noopener,noreferrer')
+      } else {
+        toast.error('No resume URL available')
+      }
     } finally {
       setOpeningResumeId(null)
     }
@@ -131,7 +136,7 @@ const ViewApplications = () => {
                   <button
                     type='button'
                     disabled={!applicant.userId.resume || openingResumeId === applicant._id}
-                    onClick={() => openResume(applicant._id)}
+                    onClick={() => openResume(applicant._id, applicant.userId.resume)}
                     className='bg-blue-50 text-blue-400 px-3 py-1 rounded inline-flex gap-2 items-center disabled:opacity-50 disabled:cursor-not-allowed'
                   >
                     {openingResumeId === applicant._id ? 'Opening…' : 'Resume'}{' '}

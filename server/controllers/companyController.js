@@ -6,6 +6,7 @@ import generateToken from "../utils/generateToken.js";
 import Job from "../models/Job.js";
 import JobApplication from "../models/JobApplication.js";
 import { sendApplicationStatusEmail } from "../utils/emailService.js";
+import { fetchResumeFromUrl } from "../utils/fetchResumeFromUrl.js";
 
 // Register a new company
 export const registerCompany = async (req, res) => {
@@ -279,25 +280,35 @@ export const streamApplicantResume = async (req, res) => {
       return res.status(403).json({ success: false, message: "Forbidden" });
     }
 
-    const resumeUrl = application.userId?.resume;
+    const resumeUrl = application.userId?.resume?.trim?.();
     if (!resumeUrl || typeof resumeUrl !== "string") {
       return res.status(404).json({ success: false, message: "No resume on file" });
     }
 
-    const upstream = await fetch(resumeUrl);
-    if (!upstream.ok) {
-      console.error("[Resume proxy] Upstream failed", upstream.status, resumeUrl);
-      return res.status(502).json({ success: false, message: "Could not load resume file" });
+    const result = await fetchResumeFromUrl(resumeUrl);
+    if (!result.ok || !result.buffer) {
+      console.error("[Resume proxy] Fetch failed", {
+        status: result.status,
+        error: result.error,
+        resumeUrl: resumeUrl.slice(0, 80),
+      });
+      const msg = result.error
+        ? result.error
+        : result.status
+          ? `Resume storage returned HTTP ${result.status}`
+          : "Could not load resume file";
+      return res.status(502).json({ success: false, message: msg });
     }
 
-    const buffer = Buffer.from(await upstream.arrayBuffer());
-    const upstreamType = upstream.headers.get("content-type") || "";
-    const mime = upstreamType.includes("pdf") ? "application/pdf" : upstreamType || "application/octet-stream";
+    const upstreamType = result.contentType || "";
+    const mime = upstreamType.includes("pdf")
+      ? "application/pdf"
+      : upstreamType || "application/octet-stream";
 
     res.setHeader("Content-Type", mime);
     res.setHeader("Content-Disposition", 'inline; filename="resume.pdf"');
     res.setHeader("Cache-Control", "private, max-age=300");
-    res.send(buffer);
+    res.send(result.buffer);
   } catch (error) {
     console.error("[Resume proxy]", error);
     return res.status(500).json({ success: false, message: error.message });
