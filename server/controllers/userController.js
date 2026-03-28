@@ -3,6 +3,7 @@ import JobApplication from "../models/JobApplication.js";
 import User from "../models/User.js";
 import { v2 as cloudinary } from "cloudinary";
 import { clerkClient } from "@clerk/clerk-sdk-node";
+import { fetchResumeFromUrl } from "../utils/fetchResumeFromUrl.js";
 
 
 // =============================
@@ -174,6 +175,48 @@ export const updateUserResume = async (req, res) => {
 
     } catch (error) {
         console.error(error);
+        return res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// =============================
+// Stream own resume PDF (Clerk user) — same Cloudinary delivery fix as recruiter proxy
+// =============================
+export const streamMyResume = async (req, res) => {
+    try {
+        const { userId } = req.auth();
+        if (!userId) {
+            return res.status(401).json({ success: false, message: "Unauthorized" });
+        }
+
+        const user = await getOrCreateUser(userId);
+        const resumeUrl = user.resume?.trim?.();
+        if (!resumeUrl || typeof resumeUrl !== "string") {
+            return res.status(404).json({ success: false, message: "No resume on file" });
+        }
+
+        const result = await fetchResumeFromUrl(resumeUrl);
+        if (!result.ok || !result.buffer) {
+            console.error("[streamMyResume] Fetch failed", result.status, result.error);
+            const msg = result.error
+                ? result.error
+                : result.status
+                  ? `Resume storage returned HTTP ${result.status}`
+                  : "Could not load resume file";
+            return res.status(502).json({ success: false, message: msg });
+        }
+
+        const upstreamType = result.contentType || "";
+        const mime = upstreamType.includes("pdf")
+            ? "application/pdf"
+            : upstreamType || "application/octet-stream";
+
+        res.setHeader("Content-Type", mime);
+        res.setHeader("Content-Disposition", 'inline; filename="resume.pdf"');
+        res.setHeader("Cache-Control", "private, max-age=300");
+        res.send(result.buffer);
+    } catch (error) {
+        console.error("[streamMyResume]", error);
         return res.status(500).json({ success: false, message: error.message });
     }
 };

@@ -16,8 +16,46 @@ const Applications = () => {
 
   const [isEdit, setIsEdit] = useState(false)
   const [resume, setResume] = useState(null)
+  const [openingResume, setOpeningResume] = useState(false)
 
   const { backendUrl, userData, userApplications, fetchUserData, fetchUserApplications } = useContext(AppContext)
+
+  const openMyResume = async () => {
+    try {
+      setOpeningResume(true)
+      const token = await getToken()
+      const { data } = await axios.get(`${backendUrl}/api/users/my-resume`, {
+        headers: { Authorization: `Bearer ${token}` },
+        responseType: 'blob',
+      })
+      const blob = new Blob([data], { type: 'application/pdf' })
+      const url = URL.createObjectURL(blob)
+      const w = window.open(url, '_blank', 'noopener,noreferrer')
+      if (!w) {
+        toast.error('Allow pop-ups to view your resume')
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 120000)
+    } catch (error) {
+      let msg = 'Failed to open resume'
+      if (error.response?.data instanceof Blob) {
+        try {
+          const text = await error.response.data.text()
+          const parsed = JSON.parse(text)
+          if (parsed.message) msg = parsed.message
+        } catch {
+          /* ignore */
+        }
+      } else if (error.response?.data?.message) {
+        msg = error.response.data.message
+      }
+      toast.warning(`${msg} Trying direct link…`)
+      if (userData?.resume && /^https?:\/\//i.test(userData.resume)) {
+        window.open(userData.resume.trim(), '_blank', 'noopener,noreferrer')
+      }
+    } finally {
+      setOpeningResume(false)
+    }
+  }
 
   const updateResume = async () => {
 
@@ -86,9 +124,14 @@ const Applications = () => {
                 <button onClick={updateResume} className='bg-green-100 border border-green-400 rounded-lg px-4 py-2'>Save</button>
               </>
               : <div className='flex gap-2'>
-                <a target='_blank' href={userData.resume} className='bg-blue-100 text-blue-600 px-4 py-2 rounded-lg'>
-                  Resume
-                </a>
+                <button
+                  type='button'
+                  disabled={!userData.resume || openingResume}
+                  onClick={openMyResume}
+                  className='bg-blue-100 text-blue-600 px-4 py-2 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed'
+                >
+                  {openingResume ? 'Opening…' : 'Resume'}
+                </button>
                 <button onClick={() => setIsEdit(true)} className='text-gray-500 border border-gray-300 rounded-lg px-4 py-2'>
                   Edit
                 </button>
