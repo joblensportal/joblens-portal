@@ -98,7 +98,11 @@ const ViewApplications = () => {
       if (data.success) {
         await fetchCompanyJobApplications()
         toast.success(data.message || 'Status updated.')
-        if (companyData?.emailConfigured === false) {
+        const en = data.emailNotification
+        if (en && en.success === false && en.message) {
+          toast.warning(en.message)
+        }
+        if (companyData?.emailConfigured === false && !en) {
           toast.info('Set EMAIL_USER and EMAIL_APP_PASSWORD on the server to email applicants automatically.')
         }
       } else {
