@@ -1,3 +1,4 @@
+import dns from "dns";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -178,14 +179,33 @@ const rejectionTemplate = (applicantName, companyName, jobTitle, recruiterEmail)
   return outerWrapper(inner);
 };
 
-const getSystemTransporter = () => {
+const SMTP_HOSTNAME = (process.env.EMAIL_SMTP_HOST || "smtp.gmail.com").trim();
+
+/**
+ * Resolve SMTP to IPv4 and connect by IP with TLS SNI.
+ * Avoids ENETUNREACH when the host has no working IPv6 route but DNS returns AAAA first
+ * (common on cloud VMs / Render).
+ */
+const createSystemTransporter = async () => {
   if (!EMAIL_USER || !EMAIL_APP_PASSWORD) return null;
   const port = Number(process.env.EMAIL_SMTP_PORT) || 465;
   const secure = port === 465;
-  // Explicit Gmail SMTP + timeouts: more reliable from cloud hosts (e.g. Render) than `service: "gmail"`.
-  // If 465 is blocked, set EMAIL_SMTP_PORT=587 on Render.
+
+  let connectHost = SMTP_HOSTNAME;
+  try {
+    const { address } = await dns.promises.lookup(SMTP_HOSTNAME, { family: 4 });
+    connectHost = address;
+  } catch (e) {
+    console.warn(
+      "[Email] IPv4 lookup failed for",
+      SMTP_HOSTNAME,
+      "— using hostname (may retry IPv6):",
+      e.message
+    );
+  }
+
   const options = {
-    host: "smtp.gmail.com",
+    host: connectHost,
     port,
     secure,
     auth: {
@@ -194,6 +214,9 @@ const getSystemTransporter = () => {
     },
     connectionTimeout: 25_000,
     greetingTimeout: 25_000,
+    tls: {
+      servername: SMTP_HOSTNAME,
+    },
   };
   if (!secure) {
     options.requireTLS = true;
@@ -214,7 +237,7 @@ export const sendApplicationStatusEmail = async ({
   if (!toEmail || !applicantName || !companyName || !jobTitle) {
     return { success: false, message: "Missing applicant or job data" };
   }
-  const transporter = getSystemTransporter();
+  const transporter = await createSystemTransporter();
   if (!transporter) {
     const msg = "Email service is not configured. Set EMAIL_USER and EMAIL_APP_PASSWORD in server .env.";
     console.warn("[Email]", msg);
@@ -250,6 +273,9 @@ export const sendApplicationStatusEmail = async ({
       hint =
         "Gmail rejected login for system email. Use an App Password (not the normal password) and ensure 2-Step Verification is enabled.";
       console.error("[Email]", hint);
+    } else if (err.code === "ENETUNREACH" || /ENETUNREACH/i.test(String(err.message))) {
+      hint =
+        "Network could not reach the mail server (often IPv6). This build uses IPv4 DNS for SMTP; redeploy or set EMAIL_SMTP_PORT=587 if it persists.";
     }
     return { success: false, message: hint };
   }
