@@ -103,7 +103,11 @@ export const getCompanyData = async (req, res) => {
 
         const company = req.company
         const obj = company.toObject ? company.toObject() : { ...company }
-        const emailConfigured = !!(process.env.EMAIL_USER && process.env.EMAIL_APP_PASSWORD)
+        const emailConfigured = Boolean(
+            (process.env.RESEND_API_KEY || "").trim() ||
+                (process.env.SENDGRID_API_KEY || "").trim() ||
+                (process.env.EMAIL_USER && process.env.EMAIL_APP_PASSWORD)
+        )
         res.json({ success: true, company: { ...obj, emailConfigured } })
 
     } catch (error) {

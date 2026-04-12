@@ -12,6 +12,13 @@ const EMAIL_LOGO_CID_PATH = path.join(__dirname, "../assets/joblens-logo-email.p
 const EMAIL_USER = process.env.EMAIL_USER;
 const EMAIL_APP_PASSWORD = process.env.EMAIL_APP_PASSWORD;
 const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "JobLens Careers";
+/** HTTPS email APIs (work when the host blocks outbound SMTP — e.g. many PaaS plans). */
+const RESEND_API_KEY = (process.env.RESEND_API_KEY || "").trim();
+const RESEND_FROM =
+  (process.env.RESEND_FROM || "").trim() || "JobLens Careers <onboarding@resend.dev>";
+const SENDGRID_API_KEY = (process.env.SENDGRID_API_KEY || "").trim();
+const SENDGRID_FROM_EMAIL = (process.env.SENDGRID_FROM_EMAIL || "").trim();
+const SENDGRID_FROM_NAME = (process.env.SENDGRID_FROM_NAME || "").trim() || EMAIL_FROM_NAME;
 const APP_SUPPORT_EMAIL = process.env.APP_SUPPORT_EMAIL || EMAIL_USER || "";
 const APP_URL = process.env.APP_URL || "";
 const EMAIL_LOGO_URL = (process.env.EMAIL_LOGO_URL || "").trim();
@@ -245,42 +252,127 @@ const smtpPortsToTry = () => {
 
 const fromAddress = () => `"${EMAIL_FROM_NAME}" <${EMAIL_USER}>`;
 
-export const sendApplicationStatusEmail = async ({
-  toEmail,
-  applicantName,
-  companyName,
-  jobTitle,
-  status,
-  recruiterEmail,
-}) => {
-  if (!toEmail || !applicantName || !companyName || !jobTitle) {
-    return { success: false, message: "Missing applicant or job data" };
-  }
-  if (!EMAIL_USER || !EMAIL_APP_PASSWORD) {
-    const msg = "Email service is not configured. Set EMAIL_USER and EMAIL_APP_PASSWORD in server .env.";
-    console.warn("[Email]", msg);
-    return { success: false, message: msg };
-  }
+const API_FETCH_TIMEOUT_MS = 35_000;
 
-  const subject =
-    status === "Accepted"
-      ? `Congratulations! Your application for ${jobTitle} has been accepted`
-      : `Application Update: ${jobTitle} at ${companyName}`;
-  const html =
-    status === "Accepted"
-      ? acceptanceTemplate(applicantName, companyName, jobTitle, recruiterEmail || "Not provided")
-      : rejectionTemplate(applicantName, companyName, jobTitle, recruiterEmail || "Not provided");
+const fetchWithTimeout = (url, init = {}) => {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), API_FETCH_TIMEOUT_MS);
+  return fetch(url, { ...init, signal: ctrl.signal }).finally(() => clearTimeout(t));
+};
 
-  const attachments = getEmailLogoAttachments();
-  const mailPayload = {
-    from: fromAddress(),
-    replyTo: recruiterEmail || APP_SUPPORT_EMAIL || EMAIL_USER,
-    to: toEmail,
+/** Inline logo for API transports (same cid:joblenslogo as templates when no public logo URL). */
+const logoAttachmentsForApi = () => {
+  if (getRemoteLogoUrl()) return [];
+  if (!logoFileExists()) return [];
+  try {
+    const content = fs.readFileSync(EMAIL_LOGO_CID_PATH).toString("base64");
+    return [
+      {
+        filename: "joblens-logo.png",
+        content,
+        content_id: "joblenslogo",
+        content_type: "image/png",
+      },
+    ];
+  } catch {
+    return [];
+  }
+};
+
+const sendViaResend = async ({ toEmail, replyTo, subject, html }) => {
+  if (!RESEND_API_KEY) return { success: false, message: "Resend not configured" };
+  const attachments = logoAttachmentsForApi();
+  const body = {
+    from: RESEND_FROM,
+    to: [toEmail],
     subject,
     html,
-    attachments,
   };
+  if (replyTo) body.reply_to = [replyTo];
+  if (attachments.length) body.attachments = attachments;
 
+  try {
+    const res = await fetchWithTimeout("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${RESEND_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const msg =
+        data.message ||
+        (Array.isArray(data.errors) && data.errors.map((e) => e.message).join("; ")) ||
+        res.statusText;
+      return { success: false, message: msg || "Resend API error" };
+    }
+    return { success: true };
+  } catch (e) {
+    const msg = e.name === "AbortError" ? "Resend request timed out" : e.message;
+    return { success: false, message: msg };
+  }
+};
+
+const sendViaSendGrid = async ({ toEmail, replyTo, subject, html }) => {
+  if (!SENDGRID_API_KEY) return { success: false, message: "SendGrid not configured" };
+  const fromEmail = SENDGRID_FROM_EMAIL || EMAIL_USER?.trim();
+  if (!fromEmail) {
+    return {
+      success: false,
+      message: "Set SENDGRID_FROM_EMAIL (verified sender) or EMAIL_USER for SendGrid.",
+    };
+  }
+
+  const attachments = logoAttachmentsForApi().map((a) => ({
+    content: a.content,
+    type: a.content_type || "image/png",
+    filename: a.filename,
+    disposition: "inline",
+    content_id: a.content_id,
+  }));
+
+  const body = {
+    personalizations: [{ to: [{ email: toEmail }] }],
+    from: { email: fromEmail, name: SENDGRID_FROM_NAME },
+    subject,
+    content: [{ type: "text/html", value: html }],
+  };
+  if (replyTo) body.reply_to = { email: replyTo };
+  if (attachments.length) body.attachments = attachments;
+
+  try {
+    const res = await fetchWithTimeout("https://api.sendgrid.com/v3/mail/send", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${SENDGRID_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    if (res.status >= 200 && res.status < 300) {
+      return { success: true };
+    }
+    const text = await res.text();
+    let msg = text || res.statusText;
+    try {
+      const j = JSON.parse(text);
+      if (j.errors?.length) msg = j.errors.map((e) => e.message).join("; ");
+    } catch {
+      /* use text */
+    }
+    return { success: false, message: msg };
+  } catch (e) {
+    const msg = e.name === "AbortError" ? "SendGrid request timed out" : e.message;
+    return { success: false, message: msg };
+  }
+};
+
+const sendViaSmtp = async ({ mailPayload }) => {
+  if (!EMAIL_USER?.trim() || !EMAIL_APP_PASSWORD) {
+    return { success: false, message: "SMTP credentials not set" };
+  }
   const connectHost = await resolveSmtpConnectHost();
   const ports = smtpPortsToTry();
   let lastErr = null;
@@ -290,14 +382,10 @@ export const sendApplicationStatusEmail = async ({
     const transporter = createTransporterForPort(connectHost, port);
     try {
       await transporter.sendMail(mailPayload);
-      const logoMode = getRemoteLogoUrl() ? "remote" : attachments.length ? "CID" : "text";
+      const logoMode = getRemoteLogoUrl() ? "remote" : mailPayload.attachments?.length ? "CID" : "text";
       console.log(
-        "[Email] Sent to",
-        toEmail,
-        "|",
-        status,
-        "| from",
-        EMAIL_USER,
+        "[Email] Sent via SMTP to",
+        mailPayload.to,
         "| smtp port",
         port,
         "| logo:",
@@ -307,8 +395,7 @@ export const sendApplicationStatusEmail = async ({
     } catch (err) {
       lastErr = err;
       console.error("[Email] Failed:", err.message, "| port", port);
-      const tryNext =
-        i < ports.length - 1 && isSmtpTimeoutError(err);
+      const tryNext = i < ports.length - 1 && isSmtpTimeoutError(err);
       if (tryNext) {
         console.warn(`[Email] Retrying SMTP on port ${ports[i + 1]}…`);
         continue;
@@ -328,7 +415,83 @@ export const sendApplicationStatusEmail = async ({
       "Network could not reach the mail server (often IPv6). This build uses IPv4 DNS for SMTP; redeploy or set EMAIL_SMTP_PORT=587 if it persists.";
   } else if (isSmtpTimeoutError(err)) {
     hint =
-      "SMTP connection timed out. Your host may block outbound mail ports; try EMAIL_SMTP_PORT=587 or 465 on the server, or use a transactional provider (e.g. SendGrid) if Gmail remains blocked.";
+      "SMTP connection timed out. Many hosts block outbound mail; set RESEND_API_KEY or SENDGRID_API_KEY to send via HTTPS instead.";
   }
   return { success: false, message: hint };
+};
+
+export const sendApplicationStatusEmail = async ({
+  toEmail,
+  applicantName,
+  companyName,
+  jobTitle,
+  status,
+  recruiterEmail,
+}) => {
+  if (!toEmail || !applicantName || !companyName || !jobTitle) {
+    return { success: false, message: "Missing applicant or job data" };
+  }
+
+  const hasResend = Boolean(RESEND_API_KEY);
+  const hasSendGrid = Boolean(SENDGRID_API_KEY);
+  const hasSmtp = Boolean(EMAIL_USER?.trim() && EMAIL_APP_PASSWORD);
+
+  if (!hasResend && !hasSendGrid && !hasSmtp) {
+    const msg =
+      "Email not configured. Set RESEND_API_KEY (recommended on Render), or SENDGRID_API_KEY, or EMAIL_USER + EMAIL_APP_PASSWORD for Gmail SMTP.";
+    console.warn("[Email]", msg);
+    return { success: false, message: msg };
+  }
+
+  const subject =
+    status === "Accepted"
+      ? `Congratulations! Your application for ${jobTitle} has been accepted`
+      : `Application Update: ${jobTitle} at ${companyName}`;
+  const html =
+    status === "Accepted"
+      ? acceptanceTemplate(applicantName, companyName, jobTitle, recruiterEmail || "Not provided")
+      : rejectionTemplate(applicantName, companyName, jobTitle, recruiterEmail || "Not provided");
+
+  const replyTo = (recruiterEmail || APP_SUPPORT_EMAIL || EMAIL_USER || "").trim() || undefined;
+
+  let lastFailure = null;
+
+  if (hasResend) {
+    const r = await sendViaResend({ toEmail, replyTo, subject, html });
+    if (r.success) {
+      console.log("[Email] Sent via Resend to", toEmail, "|", status);
+      return { success: true };
+    }
+    console.warn("[Email] Resend failed:", r.message);
+    lastFailure = r;
+  }
+
+  if (hasSendGrid) {
+    const r = await sendViaSendGrid({ toEmail, replyTo, subject, html });
+    if (r.success) {
+      console.log("[Email] Sent via SendGrid to", toEmail, "|", status);
+      return { success: true };
+    }
+    console.warn("[Email] SendGrid failed:", r.message);
+    lastFailure = r;
+  }
+
+  if (hasSmtp) {
+    const mailPayload = {
+      from: fromAddress(),
+      replyTo: replyTo || EMAIL_USER,
+      to: toEmail,
+      subject,
+      html,
+      attachments: getEmailLogoAttachments(),
+    };
+    const r = await sendViaSmtp({ mailPayload });
+    if (r.success) {
+      console.log("[Email] Sent to", toEmail, "|", status, "| from", EMAIL_USER);
+      return { success: true };
+    }
+    lastFailure = r;
+  }
+
+  return lastFailure || { success: false, message: "Email delivery failed" };
 };
