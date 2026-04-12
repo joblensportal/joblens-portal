@@ -248,9 +248,9 @@ export const ChangeJobApplicationsStatus = async (req, res) => {
             return res.json({ success: true, message: 'Status updated' })
         }
 
-        // Must complete before responding: Vercel/serverless freezes the isolate after res.json(),
-        // so fire-and-forget email never runs in production.
+        const canSendEmail = Boolean(user?.email && job && company)
         let emailNotification
+
         if (!user?.email) {
             console.warn('[Email] Applicant has no email in database, skipping notification')
             emailNotification = {
@@ -262,7 +262,13 @@ export const ChangeJobApplicationsStatus = async (req, res) => {
                 success: false,
                 message: 'Missing job or company data; email not sent.',
             }
-        } else {
+        }
+
+        const isVercel = process.env.VERCEL === '1'
+
+        // Vercel serverless: finish email before responding (process may stop after res.json).
+        // Render / long-running Node: respond immediately so the UI is not blocked by SMTP (can hang 30s+).
+        if (isVercel && canSendEmail) {
             emailNotification = await sendApplicationStatusEmail({
                 toEmail: user.email,
                 applicantName: user.name || 'Applicant',
@@ -274,13 +280,41 @@ export const ChangeJobApplicationsStatus = async (req, res) => {
             if (!emailNotification.success) {
                 console.warn('[Email] Applicant notification failed:', emailNotification.message)
             }
+            return res.json({
+                success: true,
+                message: 'Status updated',
+                emailNotification,
+            })
         }
 
-        return res.json({
+        if (canSendEmail) {
+            emailNotification = { queued: true, message: 'Email is being sent in the background.' }
+        }
+
+        res.json({
             success: true,
             message: 'Status updated',
             emailNotification,
         })
+
+        if (canSendEmail) {
+            setImmediate(() => {
+                void sendApplicationStatusEmail({
+                    toEmail: user.email,
+                    applicantName: user.name || 'Applicant',
+                    companyName: company.name,
+                    jobTitle: job.title,
+                    status,
+                    recruiterEmail: company.email,
+                })
+                    .then((emailResult) => {
+                        if (!emailResult.success) {
+                            console.warn('[Email] Applicant notification failed:', emailResult.message)
+                        }
+                    })
+                    .catch((err) => console.error('[Email] Applicant notification error:', err))
+            })
+        }
 
     } catch (error) {
         if (!res.headersSent) {

@@ -99,7 +99,9 @@ const ViewApplications = () => {
         await fetchCompanyJobApplications()
         toast.success(data.message || 'Status updated.')
         const en = data.emailNotification
-        if (en && en.success === false && en.message) {
+        if (en?.queued) {
+          toast.info(en.message || 'The applicant will receive an email shortly.')
+        } else if (en && en.success === false && en.message) {
           toast.warning(en.message)
         }
         if (companyData?.emailConfigured === false && !en) {

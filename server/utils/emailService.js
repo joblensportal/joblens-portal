@@ -180,13 +180,25 @@ const rejectionTemplate = (applicantName, companyName, jobTitle, recruiterEmail)
 
 const getSystemTransporter = () => {
   if (!EMAIL_USER || !EMAIL_APP_PASSWORD) return null;
-  return nodemailer.createTransport({
-    service: "gmail",
+  const port = Number(process.env.EMAIL_SMTP_PORT) || 465;
+  const secure = port === 465;
+  // Explicit Gmail SMTP + timeouts: more reliable from cloud hosts (e.g. Render) than `service: "gmail"`.
+  // If 465 is blocked, set EMAIL_SMTP_PORT=587 on Render.
+  const options = {
+    host: "smtp.gmail.com",
+    port,
+    secure,
     auth: {
       user: EMAIL_USER.trim(),
       pass: String(EMAIL_APP_PASSWORD).replace(/\s/g, ""),
     },
-  });
+    connectionTimeout: 25_000,
+    greetingTimeout: 25_000,
+  };
+  if (!secure) {
+    options.requireTLS = true;
+  }
+  return nodemailer.createTransport(options);
 };
 
 const fromAddress = () => `"${EMAIL_FROM_NAME}" <${EMAIL_USER}>`;
