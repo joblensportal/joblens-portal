@@ -5,6 +5,8 @@ import cloudinary from "../config/cloudinary.js";
 import generateToken from "../utils/generateToken.js";
 import Job from "../models/Job.js";
 import JobApplication from "../models/JobApplication.js";
+import User from "../models/User.js";
+import { clerkClient } from "@clerk/clerk-sdk-node";
 import { sendApplicationStatusEmail } from "../utils/emailService.js";
 import { fetchResumeFromUrl } from "../utils/fetchResumeFromUrl.js";
 
@@ -151,11 +153,39 @@ export const getCompanyJobApplicants = async (req, res) => {
 
         const companyId = req.company._id
 
-        // Find job applications for the user and populate related data
         const applications = await JobApplication.find({ companyId })
-            .populate('userId', 'name image resume email')
+            .populate('userId', 'name image resume email clerkId')
             .populate('jobId', 'title location category level salary')
             .exec()
+
+        const syncedUsers = new Set()
+        for (const app of applications) {
+            const u = app.userId
+            if (!u?.clerkId || syncedUsers.has(u._id.toString())) continue
+            const needsImage = !u.image?.trim?.()
+            const needsEmail = !u.email?.trim?.()
+            if (!needsImage && !needsEmail) continue
+            syncedUsers.add(u._id.toString())
+            try {
+                const clerkUser = await clerkClient.users.getUser(u.clerkId)
+                const email = clerkUser.emailAddresses[0]?.emailAddress || ""
+                const name =
+                    [clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(" ").trim() ||
+                    clerkUser.username ||
+                    u.name
+                const image = clerkUser.imageUrl || ""
+                const $set = {}
+                if (email && email !== u.email) $set.email = email
+                if (name && name !== u.name) $set.name = name
+                if (image && image !== u.image) $set.image = image
+                if (Object.keys($set).length > 0) {
+                    await User.updateOne({ _id: u._id }, { $set })
+                    Object.assign(u, $set)
+                }
+            } catch (e) {
+                console.warn("[Applicants] Clerk profile sync failed:", e.message)
+            }
+        }
 
         return res.json({ success: true, applications })
 
@@ -202,39 +232,54 @@ export const ChangeJobApplicationsStatus = async (req, res) => {
             return res.status(404).json({ success: false, message: 'Application not found' })
         }
 
+        const appCompanyId = application.companyId?._id ?? application.companyId
+        if (appCompanyId?.toString() !== req.company._id.toString()) {
+            return res.status(403).json({ success: false, message: 'Forbidden' })
+        }
+
         // Update status
         await JobApplication.findOneAndUpdate({ _id: id }, { status })
 
-        // Send email notification (non-blocking, graceful on failure)
         const user = application.userId
         const job = application.jobId
         const company = application.companyId
-        let emailResult = null
-        if (!user?.email && (status === 'Accepted' || status === 'Rejected')) {
-            console.warn('[Email] Applicant has no email in database, skipping notification')
-            emailResult = { success: false, message: 'Applicant has no email on file (Clerk user).' }
-        } else if (user?.email && job && company && (status === 'Accepted' || status === 'Rejected')) {
-            emailResult = await sendApplicationStatusEmail({
-                toEmail: user.email,
-                applicantName: user.name || 'Applicant',
-                companyName: company.name,
-                jobTitle: job.title,
-                status,
-                recruiterEmail: company.email,
-            })
-        }
 
+        // Respond immediately — SMTP can hang for a long time and blocked the UI with no feedback.
         res.json({
             success: true,
-            message: 'Status Changed',
-            emailSent: emailResult?.success ?? null,
-            emailError: emailResult && !emailResult.success ? emailResult.message : undefined,
+            message: 'Status updated',
         })
 
+        if (status !== 'Accepted' && status !== 'Rejected') {
+            return
+        }
+        if (!user?.email) {
+            console.warn('[Email] Applicant has no email in database, skipping notification')
+            return
+        }
+        if (!job || !company) {
+            return
+        }
+
+        void sendApplicationStatusEmail({
+            toEmail: user.email,
+            applicantName: user.name || 'Applicant',
+            companyName: company.name,
+            jobTitle: job.title,
+            status,
+            recruiterEmail: company.email,
+        })
+            .then((emailResult) => {
+                if (!emailResult.success) {
+                    console.warn('[Email] Applicant notification failed:', emailResult.message)
+                }
+            })
+            .catch((err) => console.error('[Email] Applicant notification error:', err))
+
     } catch (error) {
-
-        res.json({ success: false, message: error.message })
-
+        if (!res.headersSent) {
+            res.status(500).json({ success: false, message: error.message })
+        }
     }
 }
 

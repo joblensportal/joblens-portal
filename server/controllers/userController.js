@@ -11,20 +11,34 @@ import { fetchResumeFromUrl } from "../utils/fetchResumeFromUrl.js";
 // =============================
 const getOrCreateUser = async (clerkUserId) => {
 
-    // try finding existing user
+    const clerkUser = await clerkClient.users.getUser(clerkUserId);
+    const email = clerkUser.emailAddresses[0]?.emailAddress || "";
+    const name =
+        [clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(" ").trim() ||
+        clerkUser.username ||
+        "User";
+    const image = clerkUser.imageUrl || "";
+
     let user = await User.findOne({ clerkId: clerkUserId });
 
-    // if not found → create automatically
     if (!user) {
-
-        const clerkUser = await clerkClient.users.getUser(clerkUserId);
-
-        user = await User.create({
+        return User.create({
             clerkId: clerkUserId,
-            name: clerkUser.firstName || "User",
-            email: clerkUser.emailAddresses[0].emailAddress,
-            resume: ""
+            name,
+            email,
+            image,
+            resume: "",
         });
+    }
+
+    const patch = {};
+    if (name && user.name !== name) patch.name = name;
+    if (email && user.email !== email) patch.email = email;
+    if (image && user.image !== image) patch.image = image;
+
+    if (Object.keys(patch).length > 0) {
+        await User.updateOne({ _id: user._id }, { $set: patch });
+        user = await User.findById(user._id);
     }
 
     return user;

@@ -7,10 +7,12 @@ import Loading from '../components/Loading'
 
 const ViewApplications = () => {
 
-  const { backendUrl, companyToken } = useContext(AppContext)
+  const { backendUrl, companyToken, companyData } = useContext(AppContext)
 
   const [applicants, setApplicants] = useState(false)
   const [openingResumeId, setOpeningResumeId] = useState(null)
+  const [actionMenuId, setActionMenuId] = useState(null)
+  const [updatingId, setUpdatingId] = useState(null)
 
   const openResume = async (applicationId, directResumeUrl) => {
     try {
@@ -71,9 +73,22 @@ const ViewApplications = () => {
 
   }, [backendUrl, companyToken])
 
+  useEffect(() => {
+    if (actionMenuId === null) return
+    const handleOutside = (e) => {
+      if (!e.target.closest('[data-app-actions]')) {
+        setActionMenuId(null)
+      }
+    }
+    document.addEventListener('click', handleOutside)
+    return () => document.removeEventListener('click', handleOutside)
+  }, [actionMenuId])
+
   // Function to Update Job Applications Status 
   const changeJobApplicationStatus = async (id, status) => {
     try {
+      setUpdatingId(id)
+      setActionMenuId(null)
 
       const { data } = await axios.post(backendUrl + '/api/company/change-status',
         { id, status },
@@ -81,20 +96,20 @@ const ViewApplications = () => {
       )
 
       if (data.success) {
-        fetchCompanyJobApplications()
-        if (data.emailSent === true) {
-          toast.success('Status updated. Applicant was emailed.')
-        } else if (data.emailSent === false && data.emailError) {
-          toast.warning(`Status updated, but email failed: ${data.emailError}`)
-        } else {
-          toast.success('Status updated.')
+        await fetchCompanyJobApplications()
+        toast.success(data.message || 'Status updated.')
+        if (companyData?.emailConfigured === false) {
+          toast.info('Set EMAIL_USER and EMAIL_APP_PASSWORD on the server to email applicants automatically.')
         }
       } else {
         toast.error(data.message)
       }
 
     } catch (error) {
-      toast.error(error.message)
+      const msg = error.response?.data?.message || error.message || 'Request failed'
+      toast.error(msg)
+    } finally {
+      setUpdatingId(null)
     }
   }
 
@@ -127,7 +142,11 @@ const ViewApplications = () => {
               <tr key={index} className='text-gray-700'>
                 <td className='py-2 px-4 border-b text-center'>{index + 1}</td>
                 <td className='py-2 px-4 border-b text-center flex items-center'>
-                  <img className='w-10 h-10 rounded-full mr-3 max-sm:hidden' src={applicant.userId.image} alt="" />
+                  <img
+                    className='w-10 h-10 rounded-full mr-3 max-sm:hidden object-cover bg-slate-100 shrink-0'
+                    src={applicant.userId.image?.trim() ? applicant.userId.image : assets.profile_img}
+                    alt=""
+                  />
                   <span>{applicant.userId.name}</span>
                 </td>
                 <td className='py-2 px-4 border-b max-sm:hidden'>{applicant.jobId.title}</td>
@@ -143,14 +162,46 @@ const ViewApplications = () => {
                     <img src={assets.resume_download_icon} alt="" />
                   </button>
                 </td>
-                <td className='py-2 px-4 border-b relative'>
+                <td className='py-2 px-4 border-b relative' data-app-actions>
                   {applicant.status === "Pending"
-                    ? <div className='relative inline-block text-left group'>
-                      <button className='text-gray-500 action-button'>...</button>
-                      <div className='z-10 hidden absolute right-0 md:left-0 top-0 mt-2 w-32 bg-white border border-gray-200 rounded shadow group-hover:block'>
-                        <button onClick={() => changeJobApplicationStatus(applicant._id, 'Accepted')} className='block w-full text-left px-4 py-2 text-blue-500 hover:bg-gray-100'>Accept</button>
-                        <button onClick={() => changeJobApplicationStatus(applicant._id, 'Rejected')} className='block w-full text-left px-4 py-2 text-red-500 hover:bg-gray-100'>Reject</button>
-                      </div>
+                    ? <div className='relative inline-block text-left'>
+                      <button
+                        type='button'
+                        disabled={updatingId === applicant._id}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setActionMenuId((prev) => (prev === applicant._id ? null : applicant._id))
+                        }}
+                        className='text-gray-500 action-button px-2 py-1 rounded hover:bg-gray-100 disabled:opacity-50'
+                      >
+                        {updatingId === applicant._id ? '…' : '⋯'}
+                      </button>
+                      {actionMenuId === applicant._id && (
+                        <div className='z-30 absolute right-0 md:left-0 top-full mt-1 w-36 bg-white border border-gray-200 rounded-lg shadow-lg py-1'>
+                          <button
+                            type='button'
+                            disabled={updatingId === applicant._id}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              changeJobApplicationStatus(applicant._id, 'Accepted')
+                            }}
+                            className='block w-full text-left px-4 py-2 text-blue-600 hover:bg-gray-100 disabled:opacity-50'
+                          >
+                            Accept
+                          </button>
+                          <button
+                            type='button'
+                            disabled={updatingId === applicant._id}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              changeJobApplicationStatus(applicant._id, 'Rejected')
+                            }}
+                            className='block w-full text-left px-4 py-2 text-red-600 hover:bg-gray-100 disabled:opacity-50'
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      )}
                     </div>
                     : <div>{applicant.status}</div>
                   }
