@@ -181,20 +181,17 @@ const rejectionTemplate = (applicantName, companyName, jobTitle, recruiterEmail)
 
 const SMTP_HOSTNAME = (process.env.EMAIL_SMTP_HOST || "smtp.gmail.com").trim();
 
+const SMTP_TIMEOUT_MS = 45_000;
+
 /**
  * Resolve SMTP to IPv4 and connect by IP with TLS SNI.
  * Avoids ENETUNREACH when the host has no working IPv6 route but DNS returns AAAA first
  * (common on cloud VMs / Render).
  */
-const createSystemTransporter = async () => {
-  if (!EMAIL_USER || !EMAIL_APP_PASSWORD) return null;
-  const port = Number(process.env.EMAIL_SMTP_PORT) || 465;
-  const secure = port === 465;
-
-  let connectHost = SMTP_HOSTNAME;
+const resolveSmtpConnectHost = async () => {
   try {
     const { address } = await dns.promises.lookup(SMTP_HOSTNAME, { family: 4 });
-    connectHost = address;
+    return address;
   } catch (e) {
     console.warn(
       "[Email] IPv4 lookup failed for",
@@ -202,8 +199,12 @@ const createSystemTransporter = async () => {
       "— using hostname (may retry IPv6):",
       e.message
     );
+    return SMTP_HOSTNAME;
   }
+};
 
+const createTransporterForPort = (connectHost, port) => {
+  const secure = port === 465;
   const options = {
     host: connectHost,
     port,
@@ -212,16 +213,34 @@ const createSystemTransporter = async () => {
       user: EMAIL_USER.trim(),
       pass: String(EMAIL_APP_PASSWORD).replace(/\s/g, ""),
     },
-    connectionTimeout: 25_000,
-    greetingTimeout: 25_000,
+    connectionTimeout: SMTP_TIMEOUT_MS,
+    greetingTimeout: SMTP_TIMEOUT_MS,
+    socketTimeout: SMTP_TIMEOUT_MS,
     tls: {
       servername: SMTP_HOSTNAME,
+      minVersion: "TLSv1.2",
     },
   };
   if (!secure) {
     options.requireTLS = true;
   }
   return nodemailer.createTransport(options);
+};
+
+const isSmtpTimeoutError = (err) =>
+  err &&
+  (err.code === "ETIMEDOUT" ||
+    err.code === "ESOCKETTIMEDOUT" ||
+    /connection timeout|timeout/i.test(String(err.message || "")));
+
+/** Ports: 587 (STARTTLS) is allowed on more hosts than 465 (implicit TLS). */
+const smtpPortsToTry = () => {
+  const raw = (process.env.EMAIL_SMTP_PORT || "").trim();
+  if (raw) {
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? [n] : [587, 465];
+  }
+  return [587, 465];
 };
 
 const fromAddress = () => `"${EMAIL_FROM_NAME}" <${EMAIL_USER}>`;
@@ -237,12 +256,12 @@ export const sendApplicationStatusEmail = async ({
   if (!toEmail || !applicantName || !companyName || !jobTitle) {
     return { success: false, message: "Missing applicant or job data" };
   }
-  const transporter = await createSystemTransporter();
-  if (!transporter) {
+  if (!EMAIL_USER || !EMAIL_APP_PASSWORD) {
     const msg = "Email service is not configured. Set EMAIL_USER and EMAIL_APP_PASSWORD in server .env.";
     console.warn("[Email]", msg);
     return { success: false, message: msg };
   }
+
   const subject =
     status === "Accepted"
       ? `Congratulations! Your application for ${jobTitle} has been accepted`
@@ -253,30 +272,63 @@ export const sendApplicationStatusEmail = async ({
       : rejectionTemplate(applicantName, companyName, jobTitle, recruiterEmail || "Not provided");
 
   const attachments = getEmailLogoAttachments();
+  const mailPayload = {
+    from: fromAddress(),
+    replyTo: recruiterEmail || APP_SUPPORT_EMAIL || EMAIL_USER,
+    to: toEmail,
+    subject,
+    html,
+    attachments,
+  };
 
-  try {
-    await transporter.sendMail({
-      from: fromAddress(),
-      replyTo: recruiterEmail || APP_SUPPORT_EMAIL || EMAIL_USER,
-      to: toEmail,
-      subject,
-      html,
-      attachments,
-    });
-    const logoMode = getRemoteLogoUrl() ? "remote" : attachments.length ? "CID" : "text";
-    console.log("[Email] Sent to", toEmail, "|", status, "| from", EMAIL_USER, "| logo:", logoMode);
-    return { success: true };
-  } catch (err) {
-    console.error("[Email] Failed:", err.message);
-    let hint = err.message;
-    if (err.code === "EAUTH") {
-      hint =
-        "Gmail rejected login for system email. Use an App Password (not the normal password) and ensure 2-Step Verification is enabled.";
-      console.error("[Email]", hint);
-    } else if (err.code === "ENETUNREACH" || /ENETUNREACH/i.test(String(err.message))) {
-      hint =
-        "Network could not reach the mail server (often IPv6). This build uses IPv4 DNS for SMTP; redeploy or set EMAIL_SMTP_PORT=587 if it persists.";
+  const connectHost = await resolveSmtpConnectHost();
+  const ports = smtpPortsToTry();
+  let lastErr = null;
+
+  for (let i = 0; i < ports.length; i++) {
+    const port = ports[i];
+    const transporter = createTransporterForPort(connectHost, port);
+    try {
+      await transporter.sendMail(mailPayload);
+      const logoMode = getRemoteLogoUrl() ? "remote" : attachments.length ? "CID" : "text";
+      console.log(
+        "[Email] Sent to",
+        toEmail,
+        "|",
+        status,
+        "| from",
+        EMAIL_USER,
+        "| smtp port",
+        port,
+        "| logo:",
+        logoMode
+      );
+      return { success: true };
+    } catch (err) {
+      lastErr = err;
+      console.error("[Email] Failed:", err.message, "| port", port);
+      const tryNext =
+        i < ports.length - 1 && isSmtpTimeoutError(err);
+      if (tryNext) {
+        console.warn(`[Email] Retrying SMTP on port ${ports[i + 1]}…`);
+        continue;
+      }
+      break;
     }
-    return { success: false, message: hint };
   }
+
+  const err = lastErr;
+  let hint = err?.message || "Unknown error";
+  if (err?.code === "EAUTH") {
+    hint =
+      "Gmail rejected login for system email. Use an App Password (not the normal password) and ensure 2-Step Verification is enabled.";
+    console.error("[Email]", hint);
+  } else if (err?.code === "ENETUNREACH" || /ENETUNREACH/i.test(String(err?.message))) {
+    hint =
+      "Network could not reach the mail server (often IPv6). This build uses IPv4 DNS for SMTP; redeploy or set EMAIL_SMTP_PORT=587 if it persists.";
+  } else if (isSmtpTimeoutError(err)) {
+    hint =
+      "SMTP connection timed out. Your host may block outbound mail ports; try EMAIL_SMTP_PORT=587 or 465 on the server, or use a transactional provider (e.g. SendGrid) if Gmail remains blocked.";
+  }
+  return { success: false, message: hint };
 };
