@@ -105,9 +105,7 @@ const ViewApplications = () => {
           toast.warning(en.message)
         }
         if (companyData?.emailConfigured === false && !en) {
-          toast.info(
-            'Set RESEND_API_KEY (or SendGrid / Gmail SMTP) on the server to email applicants automatically.'
-          )
+          toast.info('Set EMAIL_USER and EMAIL_APP_PASSWORD on the server to email applicants automatically.')
         }
       } else {
         toast.error(data.message)
