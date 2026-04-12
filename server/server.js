@@ -6,7 +6,14 @@ dns.setDefaultResultOrder("ipv4first");
 import './config/instrument.js'
 import express from 'express'
 import cors from 'cors'
+import fs from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
 import connectDB from './config/db.js'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+const emailBrandLogoPath = path.join(__dirname, 'assets/joblens-logo-email.png')
 import * as Sentry from "@sentry/node";
 import { clerkWebhooks } from './controllers/webhooks.js'
 import companyRoutes from './routes/companyRoutes.js'
@@ -43,6 +50,15 @@ app.use(clerkMiddleware())
 
 // Routes
 app.get('/', (req, res) => res.send("API Working"))
+/** Public logo for HTML emails (no attachment); same file as CID fallback in emailService */
+app.get('/email-assets/joblens-logo.png', (req, res) => {
+  if (!fs.existsSync(emailBrandLogoPath)) {
+    return res.status(404).send('Not found')
+  }
+  res.setHeader('Content-Type', 'image/png')
+  res.setHeader('Cache-Control', 'public, max-age=2592000')
+  fs.createReadStream(emailBrandLogoPath).pipe(res)
+})
 app.get("/debug-sentry", function mainHandler(req, res) {
   throw new Error("My first Sentry error!");
 });

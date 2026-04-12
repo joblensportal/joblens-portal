@@ -21,10 +21,9 @@ const ViewApplications = () => {
       )
       const blob = new Blob([data], { type: 'application/pdf' })
       const url = URL.createObjectURL(blob)
-      const w = window.open(url, '_blank', 'noopener,noreferrer')
-      if (!w) {
-        toast.error('Allow pop-ups to view the resume')
-      }
+      const w = window.open(url, '_blank')
+      if (w) w.opener = null
+      else toast.error('Allow pop-ups to view the resume')
       setTimeout(() => URL.revokeObjectURL(url), 120000)
     } catch (error) {
       let msg = 'Failed to open resume'
@@ -41,7 +40,8 @@ const ViewApplications = () => {
       }
       toast.warning(`${msg} Trying direct link…`)
       if (directResumeUrl && /^https?:\/\//i.test(directResumeUrl)) {
-        window.open(directResumeUrl.trim(), '_blank', 'noopener,noreferrer')
+        const w = window.open(directResumeUrl.trim(), '_blank')
+        if (w) w.opener = null
       } else {
         toast.error('No resume URL available')
       }

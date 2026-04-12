@@ -30,10 +30,10 @@ const Applications = () => {
       })
       const blob = new Blob([data], { type: 'application/pdf' })
       const url = URL.createObjectURL(blob)
-      const w = window.open(url, '_blank', 'noopener,noreferrer')
-      if (!w) {
-        toast.error('Allow pop-ups to view your resume')
-      }
+      // Do not pass noopener in the features string: it makes window.open return null even when the tab opens.
+      const w = window.open(url, '_blank')
+      if (w) w.opener = null
+      else toast.error('Allow pop-ups to view your resume')
       setTimeout(() => URL.revokeObjectURL(url), 120000)
     } catch (error) {
       let msg = 'Failed to open resume'
@@ -50,7 +50,8 @@ const Applications = () => {
       }
       toast.warning(`${msg} Trying direct link…`)
       if (userData?.resume && /^https?:\/\//i.test(userData.resume)) {
-        window.open(userData.resume.trim(), '_blank', 'noopener,noreferrer')
+        const w = window.open(userData.resume.trim(), '_blank')
+        if (w) w.opener = null
       }
     } finally {
       setOpeningResume(false)

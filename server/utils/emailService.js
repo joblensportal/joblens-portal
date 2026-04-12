@@ -14,6 +14,7 @@ const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "JobLens Careers";
 const APP_SUPPORT_EMAIL = process.env.APP_SUPPORT_EMAIL || EMAIL_USER || "";
 const APP_URL = process.env.APP_URL || "";
 const EMAIL_LOGO_URL = (process.env.EMAIL_LOGO_URL || "").trim();
+const API_PUBLIC_URL = (process.env.API_PUBLIC_URL || "").trim();
 
 const logoFileExists = () => {
   try {
@@ -25,45 +26,53 @@ const logoFileExists = () => {
 
 const getRemoteLogoUrl = () => {
   if (EMAIL_LOGO_URL) return EMAIL_LOGO_URL;
+  const apiBase = API_PUBLIC_URL.replace(/\/$/, "");
+  if (apiBase && logoFileExists()) return `${apiBase}/email-assets/joblens-logo.png`;
   const base = APP_URL.replace(/\/$/, "");
-  if (base) return `${base}/joblens-logo.png`;
+  if (base) return `${base}/joblens-logo.svg`;
   return "";
 };
 
-/** Nodemailer attachment: inline logo (same look as local tests; no broken images if APP_URL wrong) */
+/**
+ * CID attachment only when the HTML uses cid: — not when a public URL is used (avoids a separate attachment in most clients).
+ * contentDisposition inline + explicit type reduces "attachment" appearance for inline images.
+ */
 const getEmailLogoAttachments = () => {
+  if (getRemoteLogoUrl()) return [];
   if (!logoFileExists()) return [];
   return [
     {
       filename: "joblens-logo.png",
       path: EMAIL_LOGO_CID_PATH,
       cid: "joblenslogo",
+      contentType: "image/png",
+      contentDisposition: "inline",
     },
   ];
 };
 
 /**
  * Dark band: logo + tagline, then caller adds purple/status band.
- * Prefer CID image when server/assets/joblens-logo-email.png exists.
+ * Uses a public image URL when possible (no separate attachment); otherwise CID from server/assets/joblens-logo-email.png.
  */
 const buildBrandHeaderRows = () => {
   const remote = getRemoteLogoUrl();
-
-  if (logoFileExists()) {
-    return `
-          <tr>
-            <td style="background: #030712; padding: 28px 24px 22px; text-align: center;">
-              <img src="cid:joblenslogo" alt="JobLens" width="200" style="max-width: 220px; height: auto; display: block; margin: 0 auto; border: 0;" />
-              <p style="margin: 14px 0 0; font-size: 12px; color: #cbd5e1; letter-spacing: 0.04em; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;">AI-Powered Talent Platform</p>
-            </td>
-          </tr>`;
-  }
 
   if (remote) {
     return `
           <tr>
             <td style="background: #030712; padding: 28px 24px 22px; text-align: center;">
               <img src="${remote}" alt="JobLens" width="200" style="max-width: 220px; height: auto; display: block; margin: 0 auto; border: 0;" />
+              <p style="margin: 14px 0 0; font-size: 12px; color: #cbd5e1; letter-spacing: 0.04em; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;">AI-Powered Talent Platform</p>
+            </td>
+          </tr>`;
+  }
+
+  if (logoFileExists()) {
+    return `
+          <tr>
+            <td style="background: #030712; padding: 28px 24px 22px; text-align: center;">
+              <img src="cid:joblenslogo" alt="JobLens" width="200" style="max-width: 220px; height: auto; display: block; margin: 0 auto; border: 0;" />
               <p style="margin: 14px 0 0; font-size: 12px; color: #cbd5e1; letter-spacing: 0.04em; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;">AI-Powered Talent Platform</p>
             </td>
           </tr>`;
@@ -219,7 +228,8 @@ export const sendApplicationStatusEmail = async ({
       html,
       attachments,
     });
-    console.log("[Email] Sent to", toEmail, "|", status, "| from", EMAIL_USER, "| logo:", attachments.length ? "CID" : "text/remote");
+    const logoMode = getRemoteLogoUrl() ? "remote" : attachments.length ? "CID" : "text";
+    console.log("[Email] Sent to", toEmail, "|", status, "| from", EMAIL_USER, "| logo:", logoMode);
     return { success: true };
   } catch (err) {
     console.error("[Email] Failed:", err.message);
